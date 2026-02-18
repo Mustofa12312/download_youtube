@@ -102,33 +102,63 @@
         });
     }
 
-    // ===== QUALITY RENDERING =====
-    function renderQualityOptions() {
-        const videoQualities = [
-            { q: '2160', label: '2160p — Ultra HD', badge: 'premium', badgeText: '4K' },
-            { q: '1080', label: '1080p — Full HD', badge: 'hd', badgeText: 'FHD' },
-            { q: '720', label: '720p — HD', badge: 'hd', badgeText: 'HD' },
-            { q: '480', label: '480p — Standard', badge: 'sd', badgeText: 'SD' },
-            { q: '360', label: '360p — Low', badge: 'sd', badgeText: 'SD' }
-        ];
-        const audioQualities = [
-            { q: '320', label: 'MP3 — Kualitas Terbaik', badge: 'premium', badgeText: '320k' },
-            { q: '256', label: 'MP3 — Kualitas Tinggi', badge: 'hd', badgeText: '256k' },
-            { q: '128', label: 'MP3 — Standar', badge: 'sd', badgeText: '128k' }
-        ];
+    // ===== API BASE URL =====
+    const API_BASE = window.location.origin;
+
+    // ===== QUALITY RENDERING (from real video data) =====
+    function renderQualityFromData(videoFormats, audioFormats) {
         const dlIcon = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
 
-        qualityOptions.innerHTML = videoQualities.map(v => `
-            <div class="quality-item">
-                <div class="quality-label"><span class="quality-badge ${v.badge}">${v.badgeText}</span><span>${v.label}</span></div>
-                <button class="btn-download" data-quality="${v.q}" data-format="mp4">${dlIcon} Download</button>
-            </div>`).join('');
+        function getBadge(height) {
+            if (height >= 2160) return { cls: 'premium', text: '4K' };
+            if (height >= 1080) return { cls: 'hd', text: 'FHD' };
+            if (height >= 720) return { cls: 'hd', text: 'HD' };
+            return { cls: 'sd', text: 'SD' };
+        }
 
-        audioOptions.innerHTML = audioQualities.map(a => `
-            <div class="quality-item">
-                <div class="quality-label"><span class="quality-badge ${a.badge}">${a.badgeText}</span><span>${a.label}</span></div>
-                <button class="btn-download" data-quality="${a.q}" data-format="mp3">${dlIcon} Download</button>
-            </div>`).join('');
+        function formatSize(bytes) {
+            if (!bytes) return '';
+            const mb = (parseInt(bytes) / (1024 * 1024)).toFixed(1);
+            return `~${mb} MB`;
+        }
+
+        // Render video formats
+        if (videoFormats.length > 0) {
+            qualityOptions.innerHTML = videoFormats.map(f => {
+                const badge = getBadge(f.height);
+                const size = formatSize(f.contentLength);
+                const voLabel = f.videoOnly ? ' <span style="opacity:0.5;font-size:0.75rem">(video only)</span>' : '';
+                return `<div class="quality-item">
+                    <div class="quality-label">
+                        <span class="quality-badge ${badge.cls}">${badge.text}</span>
+                        <span>${f.quality || f.height + 'p'}${voLabel} ${size ? '— ' + size : ''}</span>
+                    </div>
+                    <button class="btn-download" data-itag="${f.itag}" data-format="mp4">${dlIcon} Download</button>
+                </div>`;
+            }).join('');
+        } else {
+            qualityOptions.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:16px;">Tidak ada format video tersedia</p>';
+        }
+
+        // Render audio formats
+        if (audioFormats.length > 0) {
+            audioOptions.innerHTML = audioFormats.map(f => {
+                const bitrate = f.audioBitrate || 0;
+                let badge = { cls: 'sd', text: `${bitrate}k` };
+                if (bitrate >= 256) badge.cls = 'premium';
+                else if (bitrate >= 128) badge.cls = 'hd';
+                const size = formatSize(f.contentLength);
+                return `<div class="quality-item">
+                    <div class="quality-label">
+                        <span class="quality-badge ${badge.cls}">${badge.text}</span>
+                        <span>MP3 — ${bitrate}kbps ${size ? '— ' + size : ''}</span>
+                    </div>
+                    <button class="btn-download" data-itag="${f.itag}" data-format="mp3">${dlIcon} Download</button>
+                </div>`;
+            }).join('');
+        } else {
+            audioOptions.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:16px;">Tidak ada format audio tersedia</p>';
+        }
     }
 
     // ===== YOUTUBE UTILS =====
@@ -144,96 +174,59 @@
         return null;
     }
 
-    // ===== FETCH VIDEO INFO =====
+    // ===== FETCH VIDEO INFO (via backend API) =====
     async function fetchVideoInfo(videoId) {
         showLoading(true);
         hideError();
         resultSection.style.display = 'none';
 
         try {
-            // Use YouTube oEmbed API (no API key needed)
-            const res = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`);
-            if (!res.ok) throw new Error('Video tidak ditemukan');
+            const ytUrl = `https://www.youtube.com/watch?v=${videoId}`;
+            const res = await fetch(`${API_BASE}/api/info?url=${encodeURIComponent(ytUrl)}`);
+            if (!res.ok) {
+                const errData = await res.json().catch(() => ({}));
+                throw new Error(errData.error || 'Video tidak ditemukan');
+            }
             const data = await res.json();
 
             // Set video info
-            videoThumbnail.src = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
+            videoThumbnail.src = data.thumbnail || `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
             videoThumbnail.onerror = () => { videoThumbnail.src = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`; };
             videoTitle.textContent = data.title;
-            videoChannel.textContent = data.author_name;
-            videoDuration.textContent = ''; // oEmbed doesn't provide duration
+            videoChannel.textContent = data.channel;
+            videoDuration.textContent = data.duration || '';
             currentVideoId = videoId;
 
-            renderQualityOptions();
+            renderQualityFromData(data.videoFormats || [], data.audioFormats || []);
             resultSection.style.display = 'block';
             resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
             showToast('Video ditemukan! Pilih kualitas untuk download.', 'success');
         } catch (err) {
-            showError('Video tidak ditemukan. Pastikan link YouTube valid dan coba lagi.');
+            showError(err.message || 'Video tidak ditemukan. Pastikan link YouTube valid dan coba lagi.');
         } finally {
             showLoading(false);
         }
     }
 
-    // ===== DOWNLOAD HANDLER =====
-    function handleDownload(quality, format) {
+    // ===== DOWNLOAD HANDLER (via backend API) =====
+    function handleDownload(itag, format) {
         if (!currentVideoId) return;
-        showToast(`Memproses download ${format.toUpperCase()} ${quality}...`, 'info');
+        showToast(`Memproses download...`, 'info');
 
-        // Use cobalt.tools API (free, no API key)
-        const cobaltUrl = 'https://api.cobalt.tools/api/json';
+        const ytUrl = `https://www.youtube.com/watch?v=${currentVideoId}`;
+        const type = format === 'mp3' ? 'audio' : 'video';
+        const downloadUrl = `${API_BASE}/api/download?url=${encodeURIComponent(ytUrl)}&itag=${itag}&type=${type}`;
 
-        fetch(cobaltUrl, {
-            method: 'POST',
-            headers: {
-                'Accept': 'application/json',
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                url: `https://www.youtube.com/watch?v=${currentVideoId}`,
-                vQuality: quality,
-                filenamePattern: 'pretty',
-                isAudioOnly: format === 'mp3',
-                aFormat: 'mp3'
-            })
-        })
-            .then(res => res.json())
-            .then(data => {
-                if (data.url) {
-                    // Open download link
-                    const a = document.createElement('a');
-                    a.href = data.url;
-                    a.target = '_blank';
-                    a.rel = 'noopener';
-                    a.click();
-                    showToast('Download dimulai! Cek folder download kamu.', 'success');
-                } else if (data.status === 'redirect') {
-                    window.open(data.url, '_blank');
-                    showToast('Download dimulai!', 'success');
-                } else if (data.status === 'stream') {
-                    window.open(data.url, '_blank');
-                    showToast('Streaming download dimulai!', 'success');
-                } else {
-                    // Fallback: use alternative services
-                    fallbackDownload(quality, format);
-                }
-            })
-            .catch(() => {
-                fallbackDownload(quality, format);
-            });
-    }
+        // Create invisible link and trigger download
+        const a = document.createElement('a');
+        a.href = downloadUrl;
+        a.download = '';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
 
-    function fallbackDownload(quality, format) {
-        // Fallback to other free services
-        let downloadUrl;
-        if (format === 'mp3') {
-            downloadUrl = `https://cnvmp3.com/download.php?video=https://www.youtube.com/watch?v=${currentVideoId}`;
-        } else {
-            downloadUrl = `https://www.y2mate.com/youtube/${currentVideoId}`;
-        }
-        window.open(downloadUrl, '_blank');
-        showToast('Redirecting ke halaman download...', 'info');
+        showToast('Download dimulai! Cek folder download kamu.', 'success');
     }
 
     // ===== UI HELPERS =====
@@ -325,9 +318,9 @@
         document.addEventListener('click', (e) => {
             const btn = e.target.closest('.btn-download');
             if (btn) {
-                const quality = btn.dataset.quality;
+                const itag = btn.dataset.itag;
                 const format = btn.dataset.format;
-                handleDownload(quality, format);
+                handleDownload(itag, format);
             }
         });
 
