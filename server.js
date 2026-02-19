@@ -1,23 +1,8 @@
 const express = require('express');
 const cors = require('cors');
-const ytdl = require('@distube/ytdl-core');
+const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-
-// Create agent with cookies if available
-const cookiePath = path.join(__dirname, 'cookies.json');
-let agent;
-if (fs.existsSync(cookiePath)) {
-    try {
-        const cookies = JSON.parse(fs.readFileSync(cookiePath, 'utf8'));
-        agent = ytdl.createAgent(cookies);
-        console.log('✅ Cookies loaded successfully');
-    } catch (err) {
-        console.error('❌ Failed to load cookies:', err.message);
-    }
-} else {
-    console.log('⚠️ No cookies.json found. If you encounter 403 errors, please add cookies.json');
-}
 
 const app = express();
 const PORT = 3000;
@@ -26,78 +11,104 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname)));
 
+const YTDLP_PATH = path.join(__dirname, 'yt-dlp');
+
+// Helper function to get video info
+function getYtDlpInfo(url) {
+    return new Promise((resolve, reject) => {
+        // -j: dump JSON
+        // --no-playlist: only single video
+        // --cookies: use cookies if exist
+        const args = ['-j', '--no-playlist', url];
+
+        if (fs.existsSync(path.join(__dirname, 'cookies.json'))) {
+            args.push('--cookies', path.join(__dirname, 'cookies.json'));
+        }
+
+        const process = spawn(YTDLP_PATH, args);
+        let stdout = '';
+        let stderr = '';
+
+        process.stdout.on('data', (data) => {
+            stdout += data.toString();
+        });
+
+        process.stderr.on('data', (data) => {
+            stderr += data.toString();
+        });
+
+        process.on('close', (code) => {
+            if (code === 0) {
+                try {
+                    const info = JSON.parse(stdout);
+                    resolve(info);
+                } catch (e) {
+                    reject(new Error('Failed to parse JSON output'));
+                }
+            } else {
+                reject(new Error(stderr || 'yt-dlp process failed'));
+            }
+        });
+    });
+}
+
 // ===== GET VIDEO INFO =====
 app.get('/api/info', async (req, res) => {
     const { url } = req.query;
     if (!url) return res.status(400).json({ error: 'URL diperlukan' });
 
     try {
-        const options = {
-            agent,
-            lang: 'en',
-            requestOptions: {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Referer': 'https://www.youtube.com/',
-                }
-            }
-        };
+        const info = await getYtDlpInfo(url);
 
-        const info = await ytdl.getInfo(url, options);
-        const videoDetails = info.videoDetails;
+        // Map yt-dlp formats to our structure
+        const formats = info.formats || [];
 
-        // Get available formats
-        const formats = info.formats;
-
-        // Filter video formats with audio
+        // Filter valid formats
         const videoFormats = formats
-            .filter(f => f.hasVideo && f.hasAudio && f.container === 'mp4')
+            .filter(f => f.vcodec !== 'none' && f.acodec !== 'none' && f.ext === 'mp4') // Video + Audio
             .map(f => ({
-                itag: f.itag,
-                quality: f.qualityLabel,
+                itag: f.format_id, // Use format_id as identifier
+                quality: f.format_note || `${f.height}p`,
                 height: f.height,
-                mimeType: f.mimeType,
-                contentLength: f.contentLength,
+                mimeType: `video/${f.ext}`,
+                contentLength: f.filesize || f.filesize_approx,
                 fps: f.fps
             }))
             .sort((a, b) => (b.height || 0) - (a.height || 0));
 
-        // Also get video-only for higher qualities
         const videoOnlyFormats = formats
-            .filter(f => f.hasVideo && !f.hasAudio && f.container === 'mp4')
+            .filter(f => f.vcodec !== 'none' && f.acodec === 'none' && f.ext === 'mp4') // Video Only
             .map(f => ({
-                itag: f.itag,
-                quality: f.qualityLabel,
+                itag: f.format_id,
+                quality: f.format_note || `${f.height}p`,
                 height: f.height,
-                mimeType: f.mimeType,
-                contentLength: f.contentLength,
+                mimeType: `video/${f.ext}`,
+                contentLength: f.filesize || f.filesize_approx,
                 fps: f.fps,
                 videoOnly: true
             }))
             .sort((a, b) => (b.height || 0) - (a.height || 0));
 
-        // Audio formats
         const audioFormats = formats
-            .filter(f => f.hasAudio && !f.hasVideo)
+            .filter(f => f.vcodec === 'none' && f.acodec !== 'none') // Audio Only
             .map(f => ({
-                itag: f.itag,
-                audioBitrate: f.audioBitrate,
-                mimeType: f.mimeType,
-                contentLength: f.contentLength
+                itag: f.format_id,
+                audioBitrate: f.abr,
+                mimeType: `audio/${f.ext}`,
+                contentLength: f.filesize || f.filesize_approx
             }))
             .sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0));
 
-        // Deduplicate video formats by height
+        // Deduplicate logic
         const seenHeights = new Set();
         const uniqueVideoFormats = [];
-        // Prefer formats with audio first  
+
         for (const f of videoFormats) {
             if (f.height && !seenHeights.has(f.height)) {
                 seenHeights.add(f.height);
                 uniqueVideoFormats.push(f);
             }
         }
-        // Then add video-only for higher res not already covered
         for (const f of videoOnlyFormats) {
             if (f.height && !seenHeights.has(f.height)) {
                 seenHeights.add(f.height);
@@ -106,99 +117,107 @@ app.get('/api/info', async (req, res) => {
         }
         uniqueVideoFormats.sort((a, b) => (b.height || 0) - (a.height || 0));
 
-        const duration = parseInt(videoDetails.lengthSeconds);
+        // Duration formatting
+        const duration = info.duration;
         const minutes = Math.floor(duration / 60);
         const seconds = duration % 60;
 
         res.json({
-            videoId: videoDetails.videoId,
-            title: videoDetails.title,
-            channel: videoDetails.author.name,
+            videoId: info.id,
+            title: info.title,
+            channel: info.uploader,
             duration: `${minutes}:${seconds.toString().padStart(2, '0')}`,
-            thumbnail: videoDetails.thumbnails[videoDetails.thumbnails.length - 1]?.url || '',
+            thumbnail: info.thumbnail,
             videoFormats: uniqueVideoFormats,
             audioFormats: audioFormats
         });
+
     } catch (err) {
         console.error('Info error:', err.message);
-        res.status(500).json({ error: 'Gagal mengambil info video. Pastikan URL valid.' });
+        res.status(500).json({ error: 'Gagal mengambil info. Pastikan URL valid atau coba lagi nanti.' });
     }
 });
 
 // ===== DOWNLOAD VIDEO =====
-app.get('/api/download', async (req, res) => {
+app.get('/api/download', (req, res) => {
     const { url, itag, type } = req.query;
     if (!url) return res.status(400).json({ error: 'URL diperlukan' });
 
-    try {
-        const options = {
-            agent,
-            lang: 'en',
-            requestOptions: {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Referer': 'https://www.youtube.com/',
-                }
-            }
-        };
+    // Try to get title first? No, too slow. Just stream.
+    // Use generic name or we can pass title from frontend if we want perfect filenames.
+    // But backend should handle headers.
+    // We'll use "video.mp4" or "audio.mp3" as default, or try to get filename from yt-dlp first?
+    // Getting filename requires another call.
+    // Let's use a generic name for now to be fast, or rely on frontend passing title?
+    // Frontend logic passes url, itag, type.
 
-        const info = await ytdl.getInfo(url, options);
-        const title = info.videoDetails.title.replace(/[^\w\s-]/g, '').trim();
+    const filename = `download-${Date.now()}.${type === 'audio' ? 'mp3' : 'mp4'}`;
 
-        if (type === 'audio') {
-            // Download audio only
-            res.header('Content-Disposition', `attachment; filename="${title}.mp3"`);
-            res.header('Content-Type', 'audio/mpeg');
-
-            const stream = ytdl(url, {
-                quality: 'highestaudio',
-                filter: 'audioonly',
-                agent,
-                requestOptions: options.requestOptions,
-                highWaterMark: 1 << 25 // 32MB buffer for smoother streaming
-            });
-            stream.pipe(res);
-            stream.on('error', (err) => {
-                console.error('Audio stream error:', err.message);
-                if (!res.headersSent) {
-                    res.status(500).json({ error: 'Download audio gagal' });
-                }
-            });
-        } else {
-            // Download video
-            const selectedItag = itag ? parseInt(itag) : null;
-            const downloadOptions = {
-                quality: selectedItag || 'highest',
-                agent,
-                requestOptions: options.requestOptions,
-                highWaterMark: 1 << 25
-            };
-
-            res.header('Content-Disposition', `attachment; filename="${title}.mp4"`);
-            res.header('Content-Type', 'video/mp4');
-
-            const format = info.formats.find(f => f.itag === selectedItag);
-            if (format && format.contentLength) {
-                res.header('Content-Length', format.contentLength);
-            }
-
-            const stream = ytdl(url, downloadOptions);
-            stream.pipe(res);
-            stream.on('error', (err) => {
-                console.error('Video stream error:', err.message);
-                if (!res.headersSent) {
-                    res.status(500).json({ error: 'Download video gagal' });
-                }
-            });
-        }
-    } catch (err) {
-        console.error('Download error:', err.message);
-        res.status(500).json({ error: 'Download gagal. Coba lagi.' });
+    res.header('Content-Disposition', `attachment; filename="${filename}"`);
+    if (type === 'audio') {
+        res.header('Content-Type', 'audio/mpeg');
+    } else {
+        res.header('Content-Type', 'video/mp4');
     }
+
+    const args = [];
+    if (fs.existsSync(path.join(__dirname, 'cookies.json'))) {
+        args.push('--cookies', path.join(__dirname, 'cookies.json'));
+    }
+
+    if (type === 'audio') {
+        // Download audio
+        // -f bestaudio -x --audio-format mp3 
+        // Streaming via stdout requires -o -
+        // But transcoding to mp3 might not work easily via stdout pipe without ffmpeg strict.
+        // yt-dlp can stream original audio format.
+        // If we want mp3, yt-dlp needs ffmpeg installed.
+        // Let's assume user wants 'bestaudio' regardless of format or just stream the itag.
+        if (itag) {
+            args.push('-f', itag);
+        } else {
+            args.push('-f', 'bestaudio');
+        }
+    } else {
+        // Video
+        if (itag) {
+            // Check if itag is video-only. If so, we need to merge audio?
+            // Merging requires ffmpeg and writing to file first usually.
+            // Streaming merge to stdout is tricky but yt-dlp supports it if ffmpeg is present.
+            // safely: -f itag+bestaudio/best
+            args.push('-f', `${itag}+bestaudio/best`);
+        } else {
+            args.push('-f', 'best');
+        }
+    }
+
+    args.push('-o', '-', url); // Output to stdout
+
+    const process = spawn(YTDLP_PATH, args);
+
+    process.stdout.pipe(res);
+
+    process.stderr.on('data', (data) => {
+        console.error(`yt-dlp stderr: ${data}`);
+    });
+
+    process.on('close', (code) => {
+        if (code !== 0) {
+            console.error(`yt-dlp exited with code ${code}`);
+            if (!res.headersSent) {
+                res.status(500).json({ error: 'Download failed' });
+            }
+        }
+    });
+
+    // Handle client disconnect
+    req.on('close', () => {
+        process.kill();
+    });
 });
 
 // ===== START SERVER =====
 app.listen(PORT, () => {
-    console.log(`\n🚀 SaveTube Server berjalan di http://localhost:${PORT}\n`);
+    console.log(`\n🚀 SaveTube Server (yt-dlp) berjalan di http://localhost:${PORT}\n`);
     console.log('Buka http://localhost:3000 di browser untuk mulai download!\n');
 });
