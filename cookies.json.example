@@ -1,0 +1,41 @@
+[
+    {
+        "domain": ".youtube.com",
+        "expirationDate": 1750000000,
+        "hostOnly": false,
+        "httpOnly": true,
+        "name": "__Secure-1PSID",
+        "path": "/",
+        "sameSite": "no_restriction",
+        "secure": true,
+        "session": false,
+        "storeId": "0",
+        "value": "YOUR_COOKIE_VALUE_HERE"
+    },
+    {
+        "domain": ".youtube.com",
+        "expirationDate": 1750000000,
+        "hostOnly": false,
+        "httpOnly": true,
+        "name": "__Secure-1PAPISID",
+        "path": "/",
+        "sameSite": "no_restriction",
+        "secure": true,
+        "session": false,
+        "storeId": "0",
+        "value": "YOUR_COOKIE_VALUE_HERE"
+    },
+     {
+        "domain": ".youtube.com",
+        "expirationDate": 1750000000,
+        "hostOnly": false,
+        "httpOnly": true,
+        "name": "__Secure-1PSIDTS",
+        "path": "/",
+        "sameSite": "no_restriction",
+        "secure": true,
+        "session": false,
+        "storeId": "0",
+        "value": "YOUR_COOKIE_VALUE_HERE"
+    }
+]

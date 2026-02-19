@@ -2,6 +2,22 @@ const express = require('express');
 const cors = require('cors');
 const ytdl = require('@distube/ytdl-core');
 const path = require('path');
+const fs = require('fs');
+
+// Create agent with cookies if available
+const cookiePath = path.join(__dirname, 'cookies.json');
+let agent;
+if (fs.existsSync(cookiePath)) {
+    try {
+        const cookies = JSON.parse(fs.readFileSync(cookiePath, 'utf8'));
+        agent = ytdl.createAgent(cookies);
+        console.log('✅ Cookies loaded successfully');
+    } catch (err) {
+        console.error('❌ Failed to load cookies:', err.message);
+    }
+} else {
+    console.log('⚠️ No cookies.json found. If you encounter 403 errors, please add cookies.json');
+}
 
 const app = express();
 const PORT = 3000;
@@ -16,7 +32,18 @@ app.get('/api/info', async (req, res) => {
     if (!url) return res.status(400).json({ error: 'URL diperlukan' });
 
     try {
-        const info = await ytdl.getInfo(url);
+        const options = {
+            agent,
+            lang: 'en',
+            requestOptions: {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Referer': 'https://www.youtube.com/',
+                }
+            }
+        };
+
+        const info = await ytdl.getInfo(url, options);
         const videoDetails = info.videoDetails;
 
         // Get available formats
@@ -104,7 +131,18 @@ app.get('/api/download', async (req, res) => {
     if (!url) return res.status(400).json({ error: 'URL diperlukan' });
 
     try {
-        const info = await ytdl.getInfo(url);
+        const options = {
+            agent,
+            lang: 'en',
+            requestOptions: {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Referer': 'https://www.youtube.com/',
+                }
+            }
+        };
+
+        const info = await ytdl.getInfo(url, options);
         const title = info.videoDetails.title.replace(/[^\w\s-]/g, '').trim();
 
         if (type === 'audio') {
@@ -114,7 +152,10 @@ app.get('/api/download', async (req, res) => {
 
             const stream = ytdl(url, {
                 quality: 'highestaudio',
-                filter: 'audioonly'
+                filter: 'audioonly',
+                agent,
+                requestOptions: options.requestOptions,
+                highWaterMark: 1 << 25 // 32MB buffer for smoother streaming
             });
             stream.pipe(res);
             stream.on('error', (err) => {
@@ -126,7 +167,12 @@ app.get('/api/download', async (req, res) => {
         } else {
             // Download video
             const selectedItag = itag ? parseInt(itag) : null;
-            const options = selectedItag ? { quality: selectedItag } : { quality: 'highest' };
+            const downloadOptions = {
+                quality: selectedItag || 'highest',
+                agent,
+                requestOptions: options.requestOptions,
+                highWaterMark: 1 << 25
+            };
 
             res.header('Content-Disposition', `attachment; filename="${title}.mp4"`);
             res.header('Content-Type', 'video/mp4');
@@ -136,7 +182,7 @@ app.get('/api/download', async (req, res) => {
                 res.header('Content-Length', format.contentLength);
             }
 
-            const stream = ytdl(url, options);
+            const stream = ytdl(url, downloadOptions);
             stream.pipe(res);
             stream.on('error', (err) => {
                 console.error('Video stream error:', err.message);
