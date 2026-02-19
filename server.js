@@ -19,7 +19,9 @@ function getYtDlpInfo(url) {
         // -j: dump JSON
         // --no-playlist: only single video
         // --cookies: use cookies if exist
-        const args = ['-j', '--no-playlist', url];
+        // --force-ipv4: force ipv4 connection
+        const args = ['-j', '--no-playlist', '--force-ipv4', url];
+
 
         if (fs.existsSync(path.join(__dirname, 'cookies.json'))) {
             args.push('--cookies', path.join(__dirname, 'cookies.json'));
@@ -140,78 +142,81 @@ app.get('/api/info', async (req, res) => {
 
 // ===== DOWNLOAD VIDEO =====
 app.get('/api/download', (req, res) => {
-    const { url, itag, type } = req.query;
+    const { url, itag, type, title } = req.query;
     if (!url) return res.status(400).json({ error: 'URL diperlukan' });
 
-    // Try to get title first? No, too slow. Just stream.
-    // Use generic name or we can pass title from frontend if we want perfect filenames.
-    // But backend should handle headers.
-    // We'll use "video.mp4" or "audio.mp3" as default, or try to get filename from yt-dlp first?
-    // Getting filename requires another call.
-    // Let's use a generic name for now to be fast, or rely on frontend passing title?
-    // Frontend logic passes url, itag, type.
+    // Sanitize title for filename
+    const safeTitle = (title || `download-${Date.now()}`).replace(/[^a-z0-9]/gi, '_').substring(0, 50);
+    const ext = type === 'audio' ? 'mp3' : 'mp4';
+    const filename = `${safeTitle}.${ext}`;
 
-    const filename = `download-${Date.now()}.${type === 'audio' ? 'mp3' : 'mp4'}`;
-
+    // Set headers for file download
     res.header('Content-Disposition', `attachment; filename="${filename}"`);
-    if (type === 'audio') {
-        res.header('Content-Type', 'audio/mpeg');
-    } else {
-        res.header('Content-Type', 'video/mp4');
-    }
+    res.header('Content-Type', type === 'audio' ? 'audio/mpeg' : 'video/mp4');
 
     const args = [];
+
+    // Force IPv4 for better connectivity
+    args.push('--force-ipv4');
+
+    // Use cookies if available
     if (fs.existsSync(path.join(__dirname, 'cookies.json'))) {
         args.push('--cookies', path.join(__dirname, 'cookies.json'));
     }
 
     if (type === 'audio') {
-        // Download audio
-        // -f bestaudio -x --audio-format mp3 
-        // Streaming via stdout requires -o -
-        // But transcoding to mp3 might not work easily via stdout pipe without ffmpeg strict.
-        // yt-dlp can stream original audio format.
-        // If we want mp3, yt-dlp needs ffmpeg installed.
-        // Let's assume user wants 'bestaudio' regardless of format or just stream the itag.
+        // Audio download logic
         if (itag) {
             args.push('-f', itag);
         } else {
             args.push('-f', 'bestaudio');
         }
     } else {
-        // Video
+        // Video download logic
         if (itag) {
-            // Check if itag is video-only. If so, we need to merge audio?
-            // Merging requires ffmpeg and writing to file first usually.
-            // Streaming merge to stdout is tricky but yt-dlp supports it if ffmpeg is present.
-            // safely: -f itag+bestaudio/best
-            args.push('-f', `${itag}+bestaudio/best`);
+            // If specific format requested (e.g. 1080p video-only),
+            // try to merge with best audio.
+            // Note: Merging requires ffmpeg installed on server.
+            // If ffmpeg is missing, this might fail or fallback to unmerged.
+            // Since we pipe to stdout, uncontainerized streams (like raw h264) might not play well.
+            // Best approach for stream: try direct format if available, else standard format.
+            // We use format sorting to prefer mp4 container.
+            args.push('-f', `${itag}+bestaudio[ext=m4a]/best[ext=mp4]/best`);
         } else {
-            args.push('-f', 'best');
+            args.push('-f', 'best[ext=mp4]/best');
         }
     }
 
-    args.push('-o', '-', url); // Output to stdout
+    // Output to stdout
+    args.push('-o', '-');
+    args.push(url);
+
+    console.log(`Starting download for: ${url} [${type}]`);
 
     const process = spawn(YTDLP_PATH, args);
 
+    // Pipe stdout to response
     process.stdout.pipe(res);
 
+    // Initial error handling
     process.stderr.on('data', (data) => {
-        console.error(`yt-dlp stderr: ${data}`);
+        const msg = data.toString();
+        // Ignore progress info, log errors
+        if (!msg.includes('[download]') && !msg.includes('[info]')) {
+            console.error(`yt-dlp stderr: ${msg}`);
+        }
     });
 
     process.on('close', (code) => {
-        if (code !== 0) {
-            console.error(`yt-dlp exited with code ${code}`);
-            if (!res.headersSent) {
-                res.status(500).json({ error: 'Download failed' });
-            }
+        console.log(`Download process finished with code ${code}`);
+        if (code !== 0 && !res.headersSent) {
+            res.status(500).send('Download failed.');
         }
     });
 
     // Handle client disconnect
     req.on('close', () => {
+        console.log('Client disconnected, killing process.');
         process.kill();
     });
 });

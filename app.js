@@ -216,17 +216,16 @@
 
         const ytUrl = `https://www.youtube.com/watch?v=${currentVideoId}`;
         const type = format === 'mp3' ? 'audio' : 'video';
-        const downloadUrl = `${API_BASE}/api/download?url=${encodeURIComponent(ytUrl)}&itag=${itag}&type=${type}`;
+        const title = videoTitle.textContent || 'video';
 
-        // Create invisible link and trigger download
-        const a = document.createElement('a');
-        a.href = downloadUrl;
-        a.download = '';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+        // Encode components properly
+        const downloadUrl = `${API_BASE}/api/download?url=${encodeURIComponent(ytUrl)}&itag=${itag}&type=${type}&title=${encodeURIComponent(title)}`;
 
-        showToast('Download dimulai! Cek folder download kamu.', 'success');
+        // Trigger download via window location (more reliable for streams) or iframe
+        // Using window.location.href works well for attachments
+        window.location.href = downloadUrl;
+
+        showToast('Download dimulai! Cek notifikasi browser.', 'success');
     }
 
     // ===== UI HELPERS =====
