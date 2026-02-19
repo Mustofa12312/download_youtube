@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Environment variables (jangan upload file rahasia)
+.env
+.env.local
+.env.production
+
+# OS generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Build output
+dist/
+build/
+
+# Temporary files
+*.tmp
+*.bak
+
+# Lock file (opsional, bisa di-comment jika ingin track)
+# package-lock.json
